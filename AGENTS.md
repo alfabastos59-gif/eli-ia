@@ -28,3 +28,7 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Architecture
+- E.L.I. voice assistant: `/api/chat` streams plain text, `/api/tts` returns raw PCM16 24 kHz (Fish → Gemini fallback), `/api/stt` transcribes recorder audio; browser speech is the last voice fallback. Why: one simple audio format for gapless sentence-by-sentence playback.
+- Client logic lives in `src/hooks/useAudioPlayer|useSpeechRecognition|useVoiceAssistant` and pure helpers in `src/lib/eli/` (commands, sentences, calc, notes, weather). Why: keep UI components thin and logic testable.
