@@ -32,3 +32,4 @@ use the editor.
 ## Architecture
 - E.L.I. voice assistant: `/api/chat` streams plain text, `/api/tts` returns raw PCM16 24 kHz (Fish → Gemini fallback), `/api/stt` transcribes recorder audio; browser speech is the last voice fallback. Why: one simple audio format for gapless sentence-by-sentence playback.
 - Client logic lives in `src/hooks/useAudioPlayer|useSpeechRecognition|useVoiceAssistant` and pure helpers in `src/lib/eli/` (commands, sentences, calc, notes, weather). Why: keep UI components thin and logic testable.
+- Web research uses fixed DuckDuckGo and Wikipedia URLs inside the existing chat handler via a server-only helper, and returns source metadata in a response header while preserving the plain-text audio stream. Why: avoid paid search keys, arbitrary URL fetching and changes to gapless playback.

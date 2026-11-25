@@ -6,9 +6,10 @@ import { parseIntent } from "@/lib/eli/commands";
 import { notesStore } from "@/lib/eli/notes";
 import { currentPlace, geocode, weatherReport } from "@/lib/eli/weather";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/eli/settings";
+import { searchPlan, type WebSource, type WebStatus } from "@/lib/eli/search";
 
 export type EliState = "standby" | "listening" | "processing" | "speaking" | "executing" | "error";
-export type Message = { id: string; role: "user" | "assistant"; text: string; meta?: string; pending?: boolean };
+export type Message = { id: string; role: "user" | "assistant"; text: string; meta?: string; pending?: boolean; searching?: boolean; sources?: Pick<WebSource, "title" | "url" | "provider">[]; webNotice?: string; checkedAt?: string; webStatus?: WebStatus };
 
 export function useVoiceAssistant() {
   const player = useAudioPlayer();
@@ -34,7 +35,7 @@ export function useVoiceAssistant() {
     abortRef.current?.abort();
     abortRef.current = null;
     player.stop();
-    setMessages((m) => m.map((x) => (x.pending ? { ...x, pending: false, meta: "interrompido" } : x)));
+    setMessages((m) => m.map((x) => (x.pending ? { ...x, pending: false, searching: false, meta: "interrompido" } : x)));
     setBusy(null);
   }, [player]);
 
@@ -116,13 +117,14 @@ export function useVoiceAssistant() {
     }
 
     setBusy("processing");
+    patch({ searching: searchPlan(text).needed });
     const t0 = performance.now();
     try {
       const notes = notesStore.get().slice(0, 5).map((n) => n.text).join("; ");
       const r = await fetch("/api/chat", {
         method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [...history, { role: "user", content: text }],
+          messages: [...history.slice(-11), { role: "user", content: text }],
           geminiKey: settingsRef.current.geminiKey || undefined,
           context: `Agora: ${new Date().toLocaleString("pt-BR")}.${notes ? ` Notas do usuário: ${notes}` : ""}`,
         }),
@@ -132,6 +134,14 @@ export function useVoiceAssistant() {
         throw new Error(j.error || "A IA não respondeu.");
       }
       const reader = r.body.getReader();
+      patch({ searching: false });
+      const webHeader = r.headers.get("x-eli-research");
+      if (webHeader) {
+        try {
+          const research = JSON.parse(decodeURIComponent(webHeader)) as { sources: Pick<WebSource, "title" | "url" | "provider">[]; notice: string; checkedAt: string; status: WebStatus };
+          patch({ sources: research.sources, webNotice: research.notice, checkedAt: research.checkedAt, webStatus: research.status });
+        } catch { /* text streaming remains available if metadata is malformed */ }
+      }
       const dec = new TextDecoder();
       const split = new SentenceSplitter();
       let full = "";
@@ -153,7 +163,7 @@ export function useVoiceAssistant() {
     } catch (e) {
       if (ctrl.signal.aborted) return;
       const msg = e instanceof Error ? e.message : "Erro desconhecido";
-      patch({ pending: false, text: msg, meta: "erro" });
+      patch({ pending: false, searching: false, text: msg, meta: "erro" });
       setError(msg);
       setBusy(null);
       abortRef.current = null;
