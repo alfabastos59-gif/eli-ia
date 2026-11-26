@@ -6,37 +6,51 @@ function plain(html: string) {
   return (parseHTML(`<html><body>${html}</body></html>`).document.body.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-export function parseDuckDuckGo(html: string): WebSource[] {
-  const { document } = parseHTML(html);
-  if (document.querySelector('#challenge-form, #anomaly-form, .anomaly-modal__title') || /Unfortunately, bots use DuckDuckGo too/.test(html)) {
-    throw new Error("blocked");
-  }
+// Same free hosted endpoint and response format used by the Agent-Reach "web" channel.
+const EXA_MCP = "https://mcp.exa.ai/mcp";
+const LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests|\bquota\b|credits?/i;
+
+export function parseExa(text: string): WebSource[] {
   const sources: WebSource[] = [];
-  for (const result of document.querySelectorAll(".result")) {
-    const anchor = result.querySelector(".result__a");
-    const title = anchor?.textContent?.trim();
-    const href = anchor?.getAttribute("href");
-    if (!title || !href || result.classList.contains("result--ad")) continue;
+  for (const raw of ("\n" + text.trim()).split(/\n(?=Title: )/)) {
+    const block = raw.trim();
+    if (!block.startsWith("Title:")) continue;
+    const fields: Record<string, string> = {};
+    const lines = block.split("\n");
+    let i = 0;
+    for (; i < lines.length; i++) {
+      const m = /^(Title|URL|Published|Author):\s*(.*)$/.exec(lines[i] ?? "");
+      if (!m) break;
+      fields[(m[1] ?? "").toLowerCase()] = (m[2] ?? "").trim();
+    }
     try {
-      const redirect = new URL(href, "https://duckduckgo.com");
-      const url = new URL(redirect.searchParams.get("uddg") ?? redirect.href);
+      const url = new URL(fields["url"] ?? "");
       if (url.protocol !== "https:" && url.protocol !== "http:") continue;
-      if (url.hostname.endsWith("duckduckgo.com") || sources.some((s) => s.url === url.href)) continue;
-      sources.push({ title: title.slice(0, 180), url: url.href, snippet: (result.querySelector(".result__snippet")?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 700), provider: "DuckDuckGo" });
+      if (sources.some((s) => s.url === url.href)) continue;
+      const title = fields["title"] && fields["title"] !== "N/A" ? fields["title"] : url.hostname;
+      const snippet = lines.slice(i).filter((l) => !/^(Highlights|Text):$/.test(l.trim())).join(" ").replace(/\s+/g, " ").trim();
+      sources.push({ title: title.slice(0, 180), url: url.href, snippet: snippet.slice(0, 700), provider: "Exa" });
       if (sources.length === 5) break;
     } catch { /* discard unsafe or malformed links */ }
   }
   return sources;
 }
 
-async function duckDuckGo(query: string, signal: AbortSignal): Promise<WebSource[]> {
-  const url = new URL("https://html.duckduckgo.com/html/");
-  url.searchParams.set("q", query);
-  url.searchParams.set("kl", "br-pt");
-  const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(7000)]) });
-  if (response.status === 403 || response.status === 429 || response.status === 202) throw new Error("blocked");
+async function exaSearch(query: string, signal: AbortSignal): Promise<WebSource[]> {
+  const response = await fetch(EXA_MCP, {
+    method: "POST",
+    signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", "User-Agent": "agent-reach/eli" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "web_search_exa", arguments: { query, numResults: 5 } } }),
+  });
+  if (response.status === 403 || response.status === 429) throw new Error("blocked");
   if (!response.ok) throw new Error("unavailable");
-  return parseDuckDuckGo((await response.text()).slice(0, 1_000_000));
+  const raw = (await response.text()).slice(0, 2_000_000);
+  const payloads = raw.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim());
+  const msg = JSON.parse(payloads.at(-1) ?? raw) as { error?: { message?: string }; result?: { isError?: boolean; content?: { type?: string; text?: string }[] } };
+  const text = (msg.result?.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
+  if (msg.error || msg.result?.isError) throw new Error(LIMIT_RE.test(msg.error?.message ?? text) ? "blocked" : "unavailable");
+  return parseExa(text);
 }
 
 async function wikipedia(query: string, signal: AbortSignal): Promise<WebSource[]> {
@@ -51,18 +65,18 @@ async function wikipedia(query: string, signal: AbortSignal): Promise<WebSource[
 // Fetch only fixed providers; never follow arbitrary source URLs or relay bot checks.
 export const researchWeb = createServerOnlyFn(async (text: string, signal: AbortSignal): Promise<WebResearch> => {
   const plan = searchPlan(text);
-  const [ddg, wiki] = await Promise.allSettled([duckDuckGo(plan.query, signal), plan.wikipedia ? wikipedia(plan.query, signal) : Promise.resolve([])]);
+  const [ddg, wiki] = await Promise.allSettled([exaSearch(plan.query, signal), plan.wikipedia ? wikipedia(plan.query, signal) : Promise.resolve([])]);
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   const sources = [...(ddg.status === "fulfilled" ? ddg.value : []), ...(wiki.status === "fulfilled" ? wiki.value : [])];
   let status: WebStatus = sources.length ? "found" : "empty";
-  let notice = "Busca experimental: os trechos podem estar incompletos ou defasados; não garantem dados em tempo real.";
+  let notice = "Busca gratuita (Exa via Agent-Reach): os trechos podem estar incompletos ou defasados; não garantem dados em tempo real.";
   if (ddg.status === "rejected") {
     const blocked = ddg.reason instanceof Error && ddg.reason.message === "blocked";
     status = blocked ? "blocked" : "error";
-    notice = blocked ? "O DuckDuckGo bloqueou esta consulta automática." : "O DuckDuckGo não respondeu a esta consulta.";
+    notice = blocked ? "A busca (Exa via Agent-Reach) recusou ou limitou esta consulta." : "A busca (Exa via Agent-Reach) não respondeu.";
     notice += sources.length ? " A Wikipedia oferece apenas contexto enciclopédico, não dados em tempo real." : " A conversa continua, mas não foi possível verificar informações na web.";
   } else if (!ddg.value.length) {
-    notice = "O DuckDuckGo não trouxe resultados utilizáveis." + (sources.length ? " Usando apenas contexto enciclopédico da Wikipedia." : " Não foi possível verificar informações na web.");
+    notice = "A busca não trouxe resultados utilizáveis." + (sources.length ? " Usando apenas contexto enciclopédico da Wikipedia." : " Não foi possível verificar informações na web.");
   }
   if (plan.wikipedia && wiki.status === "rejected") notice += " A Wikipedia também está indisponível.";
   return { sources, notice, checkedAt: new Date().toISOString(), status };

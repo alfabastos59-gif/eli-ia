@@ -1,4 +1,4 @@
-export type WebSource = { title: string; url: string; snippet: string; provider: "DuckDuckGo" | "Wikipedia" };
+export type WebSource = { title: string; url: string; snippet: string; provider: "Exa" | "Wikipedia" };
 export type WebStatus = "found" | "blocked" | "error" | "empty";
 export type WebResearch = { sources: WebSource[]; notice: string; checkedAt: string; status: WebStatus };
 

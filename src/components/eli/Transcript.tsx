@@ -5,7 +5,7 @@ import { ExternalLink, Search, CircleCheck, ShieldAlert, WifiOff } from "lucide-
 
 const WEB_STATUS = {
   found: { label: "Resultados encontrados", Icon: CircleCheck, tone: "text-neon" },
-  blocked: { label: "Busca bloqueada · DuckDuckGo", Icon: ShieldAlert, tone: "text-destructive" },
+  blocked: { label: "Busca bloqueada · limite atingido", Icon: ShieldAlert, tone: "text-destructive" },
   error: { label: "Falha de conexão com a busca", Icon: WifiOff, tone: "text-destructive" },
   empty: { label: "Nenhum resultado utilizável", Icon: Search, tone: "text-muted-foreground" },
 };
